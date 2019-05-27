@@ -117,7 +117,7 @@ class ClassDefinitionValidator(object):
                                     "which is not allowed in a component!")
 
     def check_components(self, components):
-        for klassname, value in components.iteritems():
+        for klassname, value in components.items():
             self.check_component(klassname, value)
 
 
@@ -139,15 +139,18 @@ class PodioConfigReader(object):
 
     def read(self):
         stream = open(self.yamlfile, "r")
-        content = yaml.load(stream)
+        content = yaml.safe_load(stream)
         validator = ClassDefinitionValidator(content)
         if "components" in content.keys():
             validator.check_components(content["components"])
-            for klassname, value in content["components"].iteritems():
+            for klassname, value in content["components"].items():
                 component = {"Members": value}
                 self.components[klassname] = component
+
+
+
         if "datatypes" in content:
-            for klassname, value in content["datatypes"].iteritems():
+            for klassname, value in content["datatypes"].items():
                 validator.check_datatype(klassname, value)
                 datatype = {}
                 datatype["Description"] = value["Description"]
@@ -173,5 +176,5 @@ class PodioConfigReader(object):
                                                      value["ConstExtraCode"])
                 self.datatypes[klassname] = datatype
         if "options" in content.keys():
-            for option, value in content["options"].iteritems():
+            for option, value in content["options"].items():
                 self.options[option] = value
