@@ -3,304 +3,348 @@ import os
 import string
 import pickle
 import subprocess
+import re
+import collections
 from podio_config_reader import PodioConfigReader, ClassDefinitionValidator
 from podio_templates import declarations, implementations
 thisdir = os.path.dirname(os.path.abspath(__file__))
 
 
+
+
+
 class ClassGenerator(object):
 
-    def __init__(self, yamlfile, install_dir, package_name, verbose=True, dryrun=False):
+	def __init__(self, yamlfile, install_dir, package_name, verbose=True, dryrun=False):
 
-        print 'ClassGenerator __init__ TRIGGERED\n'
-        self.yamlfile = yamlfile
-        self.install_dir = install_dir
-        self.package_name = package_name
-        self.template_dir = os.path.join(thisdir, "../templates")
-        self.verbose = verbose
-        self.buildin_types = ClassDefinitionValidator.buildin_types
-        self.created_classes = []
-        self.requested_classes = []
-        self.reader = PodioConfigReader(yamlfile)
-        self.warnings = []
-        self.component_members = {}
-        self.dryrun = dryrun
-
-    def configure_clang_format(self, apply):
-
-        print 'ClassGenerator configure_clang_format TRIGGERED\n'
+		print 'ClassGenerator __init__ TRIGGERED\n'
+		self.yamlfile = yamlfile
+		self.install_dir = install_dir
+		self.package_name = package_name
+		self.template_dir = os.path.join(thisdir, "../templates")
+		self.verbose = verbose
+		self.buildin_types = ClassDefinitionValidator.buildin_types
+		self.created_classes = []
+		self.requested_classes = []
+		self.reader = PodioConfigReader(yamlfile)
+		self.warnings = []
+		self.component_members = {}
+		self.dryrun = dryrun
 
 
-        if not apply:
-            self.clang_format = []
-            return
-        try:
-            cformat_exe = subprocess.check_output(['which', 'clang-format']).strip()
-        except subprocess.CalledProcessError:
-            print ("ERROR: Cannot find clang-format executable")
-            print ("       Please make sure it is in the PATH.")
-            self.clang_format = []
-            return
-        self.clang_format = [cformat_exe, "-i",  "-style=file", "-fallback-style=llvm"]
+	def configure_clang_format(self, apply):
 
-    def process(self):
+		'''
+		USELESS at the moment! 
+		'''
 
-        print 'ClassGenerator process TRIGGERED\n'
-
-        self.reader.read()
-        self.getSyntax = self.reader.options["getSyntax"]
-        self.expose_pod_members = self.reader.options["exposePODMembers"]
-        self.process_components(self.reader.components)
-        #self.process_datatypes(self.reader.datatypes)
-        self.create_selection_xml()
-        self.print_report()
-
-    def process_components(self, content):
-
-        print 'ClassGenerator process_components TRIGGERED\n'
-
-        self.requested_classes += content.keys()
-        for name, components in content.items():
-            self.create_component(name, components["Members"])
-
-    def create_component(self, classname, components):
-      """ Create a component class to be used within the data types
-          Components can only contain simple data types and no user
-          defined ones
-      """
-
-      print 'ClassGenerator create_component TRIGGERED\n'
+		print 'ClassGenerator configure_clang_format TRIGGERED'
 
 
-      namespace, rawclassname, namespace_open, namespace_close = self.demangle_classname(classname)
-
-      includes = []
-      members = ""
-      extracode_declarations = ""
-      ostreamComponents = ""
-      printed = [""]
-      self.component_members[classname] = []
-      #fg: sort the dictionary, so at least we get a predictable order (alphabetical) of the members
-      keys = sorted( components.keys() )
-
-      ostreamComponents +=  "inline std::ostream& operator<<( std::ostream& o,const " + classname + "& value ){ \n"
-
-      for name in keys:
-#        print  " comp: " , classname , " name : " , name
-        klass = components[ name ]
-  #    for name, klass in components.items():
-        if( name != "ExtraCode"):
-
-          if not klass.startswith("std::array"):
-            ostreamComponents +=  ( '  o << value.%s << " " ;\n' %  name  )
-          else:
-            arrsize = klass[ klass.rfind(',')+1 : klass.rfind('>') ]
-            ostreamComponents +=    '  for(int i=0,N='+arrsize+';i<N;++i)\n'
-            ostreamComponents +=  ( '      o << value.%s[i] << "|" ;\n' %  name  )
-            ostreamComponents +=    '  o << "  " ;\n'
-          klassname = klass
-          mnamespace = ""
-          if "::" in klass:
-            mnamespace, klassname = klass.split("::")
-          if mnamespace == "":
-              members+= "  %s %s;\n" %(klassname, name)
-              self.component_members[classname].append([klassname, name])
-          else:
-            members += " ::%s::%s %s;\n" %(mnamespace, klassname, name)
-            self.component_members[classname].append(["::%s::%s" % (mnamespace, klassname), name])
-          if self.reader.components.has_key(klass):
-              includes.append('#include "%s.h"\n' %(klassname))
-          if "std::array" in klass:
-              includes.append("#include <array>\n")
-              array_type = klass.split("<")[1].split(",")[0]
-              if array_type not in self.buildin_types:
-                if "::" in array_type:
-                      array_type = array_type.split("::")[1]
-                includes.append("#include \"%s.h\"\n" % array_type)
-        else:
-          # handle user provided extra code
-          if klass.has_key("declaration"):
-            extracode_declarations = klass["declaration"]
-          if klass.has_key("includes"):
-             includes.append(klass["includes"])
-
-      ostreamComponents +=  "  return o ;\n"
-      ostreamComponents +=  "}\n"
-      # make includes unique and put it in a string
-      includes = ''.join(list(set(includes)))
-      substitutions = { "ostreamComponents" : ostreamComponents,
-                        "includes" : includes,
-                        "members"  : members,
-                        "extracode_declarations" : extracode_declarations,
-                        "name"     : rawclassname,
-                        "package_name" : self.package_name,
-                        "namespace_open" : namespace_open,
-                        "namespace_close" : namespace_close
-      }
-      self.fill_templates("Component",substitutions)
-      self.created_classes.append(classname)
-
-    def demangle_classname(self, classname):
-
-        print 'ClassGenerator demangle_classname TRIGGERED\n'
-
-        namespace_open = ""
-        namespace_close = ""
-        namespace = ""
-        rawclassname = ""
-        if "::" in classname:
-            cnameparts = classname.split("::")
-
-            if len(cnameparts) > 2:
-                raise Exception("'%s' defines a type with nested namespaces. Not supported, yet." % classname)
-                namespace, rawclassname = cnameparts
-                namespace_open = "namespace %s {" % namespace
-                namespace_close = "} // namespace %s" % namespace
-
-        else:
-            rawclassname = classname
-        return namespace, rawclassname, namespace_open, namespace_close
-
-    def fill_templates(self, category, substitutions):
-
-      print 'ClassGenerator fill_templates TRIGGERED\n'
-      # "Data" denotes the real class;
-      # only headers and the FN should not contain Data
-      if category == "Data":
-        FN = "Data"
-        endings = ("h")
-      elif category == "Obj":
-        FN = "Obj"
-        endings = ("h","cc")
-      elif category == "Component":
-        FN = ""
-        endings = ("h")
-      elif category == "Object":
-        FN = ""
-        endings = ("h","cc")
-      elif category == "ConstObject":
-        FN = "Const"
-        endings = ("h","cc")
-      elif category == "PrintInfo":
-        FN = "PrintInfo"
-        endings = ("h")
-      else:
-        FN = category
-        endings = ("h","cc")
-      for ending in endings:
-        templatefile = "%s.%s.template" %(category,ending)
-        templatefile = os.path.join(self.template_dir,templatefile)
-        template = open(templatefile,"r").read()
-        content = string.Template(template).substitute(substitutions).expandtabs(2)
-        filename = "%s%s.%s" %(substitutions["name"],FN,ending)
-        self.write_file(filename, content)
-
-    def write_file(self, name,content):
-
-      print 'ClassGenerator write_file TRIGGERED\n'
-
-      #dispatch headers to header dir, the rest to /src
-      # fullname = os.path.join(self.install_dir,self.package_name,name)
-      if name.endswith("h"):
-        fullname = os.path.join(self.install_dir,self.package_name,name)
-      else:
-        fullname = os.path.join(self.install_dir,"src",name)
-      if not self.dryrun:
-        open(fullname, "w").write(content)
-        if self.clang_format:
-          subprocess.call(self.clang_format + [fullname])
-
-    def process_datatype(self, classname, definition, is_data=False):
-        print 'ClassGenerator process_datatype TRIGGERED\n'
-
-        datatype_dict = {}
-        datatype_dict["description"] = definition["Description"]
-        datatype_dict["author"] = definition["Author"]
-        datatype_dict["includes"] = []
-        datatype_dict["members"] = []
-        members = definition["Members"]
-        for member in members:
-            klass = member["type"]
-            name = member["name"]
-            description = member["description"]
-            datatype_dict["members"].append("  %s %s;  ///<%s"
-                                            % (klass, name, description))
-            if "std::string" == klass:
-                datatype_dict["includes"].append("#include <string>")
-                self.warnings.append("%s defines a string member %s, that spoils the PODness"
-                                     % (classname, klass))
-            elif klass in self.buildin_types:
-                pass
-            elif klass in self.requested_classes:
-                if "::" in klass:
-                    namespace, klassname = klass.split("::")
-                    datatype_dict["includes"].append('#include "%s.h"'
-                                                     % klassname)
-                else:
-                    datatype_dict["includes"].append('#include "%s.h"'
-                                                     % klass)
-            elif "std::array" in klass:
-                datatype_dict["includes"].append("#include <array>")
-                array_type = klass.split("<")[1].split(",")[0]
-                if array_type not in self.buildin_types:
-                  if "::" in array_type:
-                        array_type = array_type.split("::")[1]
-                  datatype_dict["includes"].append("#include \"%s.h\"\n" % array_type)
-            elif "vector" in klass:
-                datatype_dict["includes"].append("#include <vector>")
-                if is_data:  # avoid having warnings twice
-                    self.warnings.append("%s defines a vector member %s, that spoils the PODness" % (classname, klass))
-            elif "[" in klass and is_data:  # FIXME: is this only true ofr PODs?
-                raise Exception("'%s' defines an array type. Array types are not supported yet." % (classname, klass))
-            else:
-                raise Exception("'%s' defines a member of a type '%s' that is not (yet) declared!" % (classname, klass))
-        # get rid of duplicates:
-        datatype_dict["includes"] = list(set(datatype_dict["includes"]))
-        return datatype_dict
-
-    def create_selection_xml(self):
-
-        print 'ClassGenerator create_selection_xml TRIGGERED\n'
-
-        content = ""
-        for klass in self.created_classes:
-            # if not klass.endswith("Collection") or klass.endswith("Data"):
-            content += '          <class name="std::vector<%s>" />\n' % klass
-            content += """
-            <class name="%s">
-              <field name="m_registry" transient="true"/>
-              <field name="m_container" transient="true"/>
-            </class>\n""" % klass
-
-        templatefile = os.path.join(self.template_dir,
-                                    "selection.xml.template")
-        template = open(templatefile, "r").read()
-        content = string.Template(template).substitute({"classes": content})
-        self.write_file("selection.xml", content)
-
-    def print_report(self):
-
-        print 'ClassGenerator print_report TRIGGERED\n'
-        if self.verbose:
-            pkl = open(os.path.join(thisdir, "figure.txt"))
-            figure = pickle.load(pkl)
-            text = "%s %d %s" % (self.yamlfile,
-                             len(self.created_classes),
-                             self.install_dir)
-            cntr = 0
-            print
-            for figline, summaryline in zip(figure, text.splitlines()):
-                cntr += 1
-                print (figline + summaryline)
-            for i in xrange(cntr, len(figure)):
-                print (figure[i])
-            print ("     'Homage to the Square' - Josef Albers")
-            print
+		if not apply:
+		    self.clang_format = []
+		    return
+		try:
+		    cformat_exe = subprocess.check_output(['which', 'clang-format']).strip()
+		except subprocess.CalledProcessError:
+		    print ("ERROR: Cannot find clang-format executable")
+		    print ("       Please make sure it is in the PATH.")
+		    self.clang_format = []
+		    return
+		self.clang_format = [cformat_exe, "-i",  "-style=file", "-fallback-style=llvm"]
 
 
+	def process(self):
+
+		print 'ClassGenerator process TRIGGERED\n'
+
+		self.reader.read()
+		self.getSyntax = self.reader.options["getSyntax"]
+		self.expose_pod_members = self.reader.options["exposePODMembers"]
+		
+		# print ('yamlfile components\n {}'.format(self.reader.components))
+		
+		self.process_components(self.reader.components)		
+	
+	def write_hdf5_component(self, name, members):
+		d = collections.OrderedDict()
+		
+		header_dir = os.path.join(thisdir, self.install_dir,self.package_name,name)
+		
+		includes = ['// this is generated by podio_class_generator.py\n#include "{}.h"\n'.format(header_dir,name),\
+					 '// header required for HDF5\n#include "H5Cpp.h"\n',\
+					"// for shared pointers\n#include <memory>\n", \
+					"// for printing messages\n#include <iostream>\n"]
+					
+		namespace = ['using namespace H5;\n']
+		
+		# need to declare the strings for setting up the struct
+		const_dec = ['const H5std_string FILE_NAME("{}_to_HDF5.h5");\n'.format(name), \
+						'const H5std_string DATASET_NAME("{}_data");\n'.format(name)]
+
+		# fill the const_dec with each variable in the struct
+		# also get array dimensions if any and insert 
+		array_dim = {}
+		member_map = {}
+		count = 1
+		
+		
+		for varName, dtype in members.items():
+			# ignore extra code
+			if varName != 'ExtraCode':
+				declaration = 'const H5std_string MEMBER{}("{}");\n'.format(count, varName)
+				member_map[varName] = count
+				const_dec.append(declaration)
+				count +=1
+				if 'std::array' in dtype:
+					# get the dimension of the array
+					array_dim[varName] = re.findall(r'\d+', dtype)[0]
+				
+		#print(array_dim)
+		rank_declaration = 'const int RANK = 1;\n'
+		const_dec.append(rank_declaration)
+		
+		
+		# Now we write the main function
+		generic = "int main(int argc, char** argv)"+\
+			"{\n"+ \
+			"\tif(argc !=2)\n"+\
+			"\t\t{\n"+\
+				'\t\t\tstd::cout<<"Wrong Input. Run ./SimpleStruct <int size>\\n";\n'+ \
+				'\t\t\texit(1);\n' +\
+			'\t\t}\n'+\
+		'\tconst long long unsigned int SIZE = atoi(argv[1]);\n'
+		
+		# create an array with elements of type name
+		array_dec = "\tstruct {}* p = (struct {}*)malloc(SIZE * sizeof(struct {}));\n".format(name, name, name)
+					
+		# declare dimension of arrays if any
+		h_dec = ''
+		for v, d in array_dim.items():
+			h_dec = '\thsize_t %s_array_dim[] = {%s};\n;' % (v, d) 
+			 
+	
+		# create compound type
+		comp_dec = '\tCompType mtype(sizeof({}));\n'.format(name)
+		# c++ to hdf5 datatype map
+		dtype_map = {'int': 'PredType::NATIVE_INT',     \
+					'double': 'PredType::NATIVE_DOUBLE',\
+					'long': 'PredType::NATIVE_LONG',    \
+					'char': 'PredType::NATIVE_CHAR',    \
+					'float': 'PredType::NATIVE_FLOAT'}
+		# different map for array type
+		a_type_map = {'int': 'H5T_NATIVE_INT', \
+			'double': 'H5T_NATIVE_DOUBLE',		\
+			'long': 'H5T_NATIVE_LONG',			\
+			'char': 'H5T_NATIVE_CHAR',			\
+			'float': 'H5T_NATIVE_FLOAT'}
+		
+		for varName, dtype in members.items():
+			# ignore extra code
+			if varName != 'ExtraCode':
+				if varName not in array_dim:
+					hdf5_dtype = dtype_map[dtype]
+					count = member_map[varName]
+					comp_dec += '\tmtype.insertMember(MEMBER{}, HOFFSET({}, {}),{});\n'.format(count, name, varName, hdf5_dtype)
+													
+				else:
+					st_index = dtype.find('<') + 1
+					end_index = dtype.find(',') 
+					data_type = dtype[st_index:end_index].strip()
+					hdf5_dtype = a_type_map[data_type]
+					count = member_map[varName]
+					comp_dec += '\tmtype.insertMember(MEMBER{}, HOFFSET({}, p),H5Tarray_create({}, 1, {}_array_dim));\n'.format(count,name,hdf5_dtype,varName)
+								
+		till_now = "".join(includes) + "".join(namespace) + "".join(const_dec) \
+					 + generic + array_dec + h_dec + comp_dec 
+		
+		# create file
+		file_dec = "\tstd::shared_ptr<H5File> file(new H5File(FILE_NAME, H5F_ACC_TRUNC));\n"
+		# create dataset
+		data_dec = "\thsize_t dim[] = {SIZE};\n"
+		data_dec += "\tDataSpace space(RANK, dim);\n" 
+		data_dec += "\tstd::shared_ptr<DataSet> dataset(new DataSet(file->createDataSet(DATASET_NAME, mtype, space)));\n"
+		# write data
+		data_dec += '\tdataset->write(p, mtype);\n' + '\treturn 0;\n}'
+		
+		content = till_now + file_dec + data_dec
+		filename = "write_{}.cpp".format(name)	
+		#print 'HDF5 WRITE DONE\n'
+		#print 'filename {}'.format(filename)
+		#print 'contents\n'
+		#print content
+		self.write_file(filename, content)
+
+	def process_components(self, content):
+
+		print 'ClassGenerator process_components TRIGGERED\n'
+
+		self.requested_classes += content.keys()
+		for name, components in content.items():
+			self.create_component(name, components["Members"])
+			self.write_hdf5_component(name, components['Members'])
+
+	def create_component(self, classname, components):
+	  """ Create a component class to be used within the data types
+		  Components can only contain simple data types and no user
+		  defined ones
+	  """
+
+	  print 'ClassGenerator create_component TRIGGERED\n'
 
 
-type_map = {'int':'PredType::NATIVE_INT', ''}
+	  namespace, rawclassname, namespace_open, namespace_close = self.demangle_classname(classname)
+	  
+	  '''
+	  print('demangle_class returns\n')
+	  
+	  
+	  print('namespace {}\n'.format(namespace))
+	  print('rawclassname {}\n'.format(rawclassname))
+	  print('namespace_open {}\n'.format(namespace_open))
+	  print('namespace_close {}\n'.format(namespace_close))
+	  '''
+	  
+	  includes = []
+	  members = ""
+	  extracode_declarations = ""
+	  ostreamComponents = ""
+	  printed = [""]
+	  self.component_members[classname] = []
+	  keys = sorted( components.keys() )
+
+	  ostreamComponents +=  "inline std::ostream& operator<<( std::ostream& o,const " + classname + "& value ){ \n"
+
+	  for name in keys:
+	  	print  " comp: " , classname , " name : " , name
+		klass = components[ name ]
+		if( name != "ExtraCode"):
+
+		  if not klass.startswith("std::array"):
+		    ostreamComponents +=  ( '  o << value.%s << " " ;\n' %  name  )
+		  else:
+		    arrsize = klass[ klass.rfind(',')+1 : klass.rfind('>') ]
+		    ostreamComponents +=    '  for(int i=0,N='+arrsize+';i<N;++i)\n'
+		    ostreamComponents +=  ( '      o << value.%s[i] << "|" ;\n' %  name  )
+		    ostreamComponents +=    '  o << "  " ;\n'
+		  klassname = klass
+		  mnamespace = ""
+		  if "::" in klass:
+		    mnamespace, klassname = klass.split("::")
+		  if mnamespace == "":
+		      members+= "  %s %s;\n" %(klassname, name)
+		      self.component_members[classname].append([klassname, name])
+		  else:
+		    members += " ::%s::%s %s;\n" %(mnamespace, klassname, name)
+		    self.component_members[classname].append(["::%s::%s" % (mnamespace, klassname), name])
+		  if self.reader.components.has_key(klass):
+		      includes.append('#include "%s.h"\n' %(klassname))
+		  if "std::array" in klass:
+		      includes.append("#include <array>\n")
+		      array_type = klass.split("<")[1].split(",")[0]
+		      if array_type not in self.buildin_types:
+		        if "::" in array_type:
+		              array_type = array_type.split("::")[1]
+		        includes.append("#include \"%s.h\"\n" % array_type)
+		else:
+		  # handle user provided extra code
+		  if klass.has_key("declaration"):
+		    extracode_declarations = klass["declaration"]
+		  if klass.has_key("includes"):
+		     includes.append(klass["includes"])
+
+	  ostreamComponents +=  "  return o ;\n"
+	  ostreamComponents +=  "}\n"
+	  # make includes unique and put it in a string
+	  includes = ''.join(list(set(includes)))
+	  substitutions = { "ostreamComponents" : ostreamComponents,
+		                "includes" : includes,
+		                "members"  : members,
+		                "extracode_declarations" : extracode_declarations,
+		                "name"     : rawclassname,
+		                "package_name" : self.package_name,
+		                "namespace_open" : namespace_open,
+		                "namespace_close" : namespace_close
+	  }
+	  self.fill_templates("Component",substitutions)
+	  self.created_classes.append(classname)
+
+	def demangle_classname(self, classname):
+
+		print 'ClassGenerator demangle_classname TRIGGERED\n'
+
+		namespace_open = ""
+		namespace_close = ""
+		namespace = ""
+		rawclassname = ""
+		if "::" in classname:
+		    cnameparts = classname.split("::")
+
+		    if len(cnameparts) > 2:
+		        raise Exception("'%s' defines a type with nested namespaces. Not supported, yet." % classname)
+		        namespace, rawclassname = cnameparts
+		        namespace_open = "namespace %s {" % namespace
+		        namespace_close = "} // namespace %s" % namespace
+
+		else:
+		    rawclassname = classname
+		return namespace, rawclassname, namespace_open, namespace_close
+
+	def fill_templates(self, category, substitutions):
+
+	  print 'ClassGenerator fill_templates TRIGGERED\n'
+	  # "Data" denotes the real class;
+	  # only headers and the FN should not contain Data
+	  if category == "Data":
+		FN = "Data"
+		endings = ("h")
+	  elif category == "Obj":
+		FN = "Obj"
+		endings = ("h","cc")
+	  elif category == "Component":
+		FN = ""
+		endings = ("h")
+	  elif category == "Object":
+		FN = ""
+		endings = ("h","cc")
+	  elif category == "ConstObject":
+		FN = "Const"
+		endings = ("h","cc")
+	  elif category == "PrintInfo":
+		FN = "PrintInfo"
+		endings = ("h")
+	  else:
+		FN = category
+		endings = ("h","cc")
+	  for ending in endings:
+		templatefile = "%s.%s.template" %(category,ending)
+		templatefile = os.path.join(self.template_dir,templatefile)
+		template = open(templatefile,"r").read()
+		content = string.Template(template).substitute(substitutions).expandtabs(2)
+		filename = "%s%s.%s" %(substitutions["name"],FN,ending)
+		self.write_file(filename, content)
+
+	def write_file(self, name,content):
+
+	  print 'ClassGenerator write_file TRIGGERED\n'
+
+	  #dispatch headers to header dir, the rest to /src
+	  # fullname = os.path.join(self.install_dir,self.package_name,name)
+	  if name.endswith("h"):
+		fullname = os.path.join(self.install_dir,self.package_name,name)
+	  else:
+		#print 'HDF5 file here'
+		fullname = os.path.join(self.install_dir,"src",name)
+	  if not self.dryrun:
+		#print 'HDF5 file here dryrun'
+		print('fullname = {}'.format(fullname))
+		open(fullname, "w").write(content)
+		if self.clang_format:
+		  subprocess.call(self.clang_format + [fullname])
+
+
+
+
 
 ##########################
 if __name__ == "__main__":
