@@ -344,11 +344,45 @@ class ClassGenerator(object):
 		# obtained from the unfolded method
 
 		# TODO: after this we should have a unique_flat_members, with array_dims	
+                
+                # get a list of relevant structs required
+                list_of_dependent_structs = []
+                for k_name,d_name in self.reader.components[name]['Members'].items():
+                    if 'std::array' not in d_name and d_name not in self.predef and 'ExtraCode' not in k_name:
+                      list_of_dependent_structs.append(d_name)
+                list_of_dependent_structs.append(name)
 
-		work_set = self.unique_flat_members
+                print "List of dependencies for name = {}".format(name)
+
+                print list_of_dependent_structs
+
+                work_set = {}
+                for struct_name in list_of_dependent_structs:
+                    for dot_name in self.unique_flat_members:
+			try:
+		                first_occur = dot_name.index(struct_name)
+		                if first_occur == 0:
+		                    work_set[dot_name] = self.unique_flat_members[dot_name]
+		        except:
+		        	continue 
+		        	
+                print "Working Set for name = {}".format(name)
+
+                print pprint(work_set)
+
+
 		order_sets, flattened_members = self.order_by_class(work_set)
-		final_buffer = self.const_lines(flattened_members)
+		
+		print "Order Set for name = {}".format(name)
 
+                print pprint(order_sets)
+                
+                print "Flattened Set for name = {}".format(name)
+
+                print pprint(flattened_members)
+                
+		final_buffer = self.const_lines(flattened_members)
+                
 		# TODO: Have to figure out rank declaration. 
 		rank_declaration = 'const int RANK = 1;\n'
 		
@@ -372,6 +406,10 @@ class ClassGenerator(object):
 		struct_array_dec = ''
 
 		order_sets = reduce(lambda x,y: x+y,order_sets)
+		
+		print "After reduce order set for name = {}".format(name)
+
+                print pprint(order_sets)
 
 		index = order_sets.index(name)
 		useful_set = order_sets[:index+1] 
@@ -382,7 +420,7 @@ class ClassGenerator(object):
 						
 			# declare dimension of arrays if any for compound type
 
-			wking_set = self.working_set(self.unique_flat_members, struct_name)	
+			wking_set = self.working_set(flattened_members, struct_name)	
 			for varName, dtype in wking_set.items():
 				if 'std::array' in dtype:			
 					new_var = self.dot_to_underscore(varName)
